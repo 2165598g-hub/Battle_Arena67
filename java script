@@ -1,0 +1,2235 @@
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+ctx.imageSmoothingEnabled = false;
+
+const W = canvas.width;
+const H = canvas.height;
+
+// ============================================================
+// ASSETS — PUT YOUR LINKS HERE
+// ============================================================
+
+const ASSETS = {
+  images: {
+    redLizard: "",
+
+    gunOperative: "",
+    psychicGirl: "",
+    fireGuardian: "",
+
+    nightmareSlasher: "",
+    tarMonster: "",
+    enemy3: ""
+  },
+
+  audio: {
+    bgm: "",
+
+    tongueGrab: "https://www.dropbox.com/scl/fi/1qtwf7i3848kxl49a2kug/Giant_lizard_tongue__-4-1790808617308.mp3?rlkey=w1mmny0338iilpxynkyvw6s0g&st=zef6yw0m&raw=1",
+    tongueEat: "",
+
+    gunShot: "",
+    telekinesis: "",
+
+    fireball: "",
+    firewall: "",
+    shield: "",
+
+    knifeThrow: "",
+    knifeHit: "",
+
+    tarStretch: "",
+    tarMorph: "",
+
+    hurt: "",
+    death: ""
+  }
+};
+
+// ============================================================
+// LOAD IMAGES
+// ============================================================
+
+const images = {};
+
+for (const [key, url] of Object.entries(ASSETS.images)) {
+  if (!url) continue;
+
+  const img = new Image();
+  img.src = url;
+
+  images[key] = img;
+}
+
+// ============================================================
+// AUDIO
+// ============================================================
+
+const sounds = {};
+let bgm = null;
+
+for (const [key, url] of Object.entries(ASSETS.audio)) {
+  if (!url || key === "bgm") continue;
+
+  const audio = new Audio(url);
+  audio.preload = "auto";
+
+  sounds[key] = audio;
+}
+
+function playSfx(name, volume = 0.6) {
+  if (!sounds[name]) return;
+
+  const sound = sounds[name].cloneNode();
+  sound.volume = volume;
+
+  sound.play().catch(() => {});
+}
+
+function startMusic() {
+  if (!ASSETS.audio.bgm) return;
+
+  if (!bgm) {
+    bgm = new Audio(ASSETS.audio.bgm);
+    bgm.loop = true;
+    bgm.volume = 0.35;
+  }
+
+  bgm.play().catch(() => {});
+}
+
+// ============================================================
+// INPUT
+// ============================================================
+
+const keys = {};
+
+const mouse = {
+  x: W / 2,
+  y: H / 2,
+  down: false
+};
+
+window.addEventListener("keydown", e => {
+  keys[e.code] = true;
+
+  if (e.code === "KeyQ") {
+    useSpecial(player);
+  }
+
+  if (e.code === "KeyE") {
+    useSecondary(player);
+  }
+
+  if (e.code === "KeyR") {
+    resetGame();
+  }
+});
+
+window.addEventListener("keyup", e => {
+  keys[e.code] = false;
+});
+
+canvas.addEventListener("mousemove", e => {
+  const rect = canvas.getBoundingClientRect();
+
+  mouse.x =
+    (e.clientX - rect.left) *
+    (W / rect.width);
+
+  mouse.y =
+    (e.clientY - rect.top) *
+    (H / rect.height);
+});
+
+canvas.addEventListener("mousedown", () => {
+  mouse.down = true;
+});
+
+window.addEventListener("mouseup", () => {
+  mouse.down = false;
+});
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+
+function normalize(x, y) {
+  const length = Math.hypot(x, y) || 1;
+
+  return {
+    x: x / length,
+    y: y / length
+  };
+}
+
+function dist(a, b) {
+  return Math.hypot(
+    a.x - b.x,
+    a.y - b.y
+  );
+}
+
+function pointSegmentDistance(
+  px,
+  py,
+  x1,
+  y1,
+  x2,
+  y2
+) {
+  const vx = x2 - x1;
+  const vy = y2 - y1;
+
+  const wx = px - x1;
+  const wy = py - y1;
+
+  const c1 = vx * wx + vy * wy;
+
+  if (c1 <= 0) {
+    return Math.hypot(
+      px - x1,
+      py - y1
+    );
+  }
+
+  const c2 = vx * vx + vy * vy;
+
+  if (c2 <= c1) {
+    return Math.hypot(
+      px - x2,
+      py - y2
+    );
+  }
+
+  const t = c1 / c2;
+
+  const bx = x1 + t * vx;
+  const by = y1 + t * vy;
+
+  return Math.hypot(
+    px - bx,
+    py - by
+  );
+}
+
+function circleRect(circle, rect) {
+  const x = clamp(
+    circle.x,
+    rect.x,
+    rect.x + rect.w
+  );
+
+  const y = clamp(
+    circle.y,
+    rect.y,
+    rect.y + rect.h
+  );
+
+  return (
+    Math.hypot(
+      circle.x - x,
+      circle.y - y
+    ) < circle.r
+  );
+}
+
+// ============================================================
+// MAP
+// ============================================================
+
+const walls = [
+  // OUTER
+  { x: 20, y: 20, w: 960, h: 16 },
+  { x: 20, y: 584, w: 960, h: 16 },
+  { x: 20, y: 20, w: 16, h: 580 },
+  { x: 964, y: 20, w: 16, h: 580 },
+
+  // MEDBAY
+  { x: 250, y: 150, w: 18, h: 115 },
+  { x: 250, y: 335, w: 18, h: 115 },
+
+  // ARMORY
+  { x: 732, y: 150, w: 18, h: 115 },
+  { x: 732, y: 335, w: 18, h: 115 },
+
+  // REACTOR LEFT
+  { x: 390, y: 200, w: 18, h: 70 },
+  { x: 390, y: 345, w: 18, h: 125 },
+
+  // REACTOR RIGHT
+  { x: 592, y: 200, w: 18, h: 70 },
+  { x: 592, y: 345, w: 18, h: 125 },
+
+  // CORE
+  { x: 455, y: 275, w: 90, h: 70 },
+
+  // CRATES
+  { x: 105, y: 245, w: 60, h: 42 },
+  { x: 835, y: 245, w: 60, h: 42 },
+
+  // HANGAR OBJECTS
+  { x: 350, y: 500, w: 55, h: 40 },
+  { x: 595, y: 500, w: 55, h: 40 }
+];
+
+function collidesMap(entity) {
+  return walls.some(w =>
+    circleRect(entity, w)
+  );
+}
+
+// ============================================================
+// BASIC MOVEMENT
+// ============================================================
+
+function moveEntity(entity, dx, dy) {
+  let moved = false;
+
+  entity.x += dx;
+
+  if (collidesMap(entity)) {
+    entity.x -= dx;
+  } else {
+    moved = true;
+  }
+
+  entity.y += dy;
+
+  if (collidesMap(entity)) {
+    entity.y -= dy;
+  } else {
+    moved = true;
+  }
+
+  entity.x = clamp(
+    entity.x,
+    42 + entity.r,
+    W - 42 - entity.r
+  );
+
+  entity.y = clamp(
+    entity.y,
+    42 + entity.r,
+    H - 42 - entity.r
+  );
+
+  return moved;
+}
+
+// ============================================================
+// SMART AI MOVEMENT
+// ============================================================
+
+function moveTowardSmart(entity, target, speed, dt) {
+  const direct = normalize(
+    target.x - entity.x,
+    target.y - entity.y
+  );
+
+  const amount = speed * dt;
+
+  // Try direct movement first.
+  if (
+    tryMovement(
+      entity,
+      direct.x * amount,
+      direct.y * amount
+    )
+  ) {
+    return;
+  }
+
+  // Try horizontal only.
+  if (
+    Math.abs(direct.x) > 0.05 &&
+    tryMovement(
+      entity,
+      direct.x * amount,
+      0
+    )
+  ) {
+    return;
+  }
+
+  // Try vertical only.
+  if (
+    Math.abs(direct.y) > 0.05 &&
+    tryMovement(
+      entity,
+      0,
+      direct.y * amount
+    )
+  ) {
+    return;
+  }
+
+  // Try clockwise around obstacle.
+  const side1 = {
+    x: -direct.y,
+    y: direct.x
+  };
+
+  if (
+    tryMovement(
+      entity,
+      side1.x * amount,
+      side1.y * amount
+    )
+  ) {
+    return;
+  }
+
+  // Try counterclockwise.
+  const side2 = {
+    x: direct.y,
+    y: -direct.x
+  };
+
+  tryMovement(
+    entity,
+    side2.x * amount,
+    side2.y * amount
+  );
+}
+
+function tryMovement(entity, dx, dy) {
+  const oldX = entity.x;
+  const oldY = entity.y;
+
+  entity.x += dx;
+  entity.y += dy;
+
+  if (collidesMap(entity)) {
+    entity.x = oldX;
+    entity.y = oldY;
+
+    return false;
+  }
+
+  return true;
+}
+
+// ============================================================
+// CHARACTER FACTORY
+// ============================================================
+
+function makeCharacter(data) {
+  return {
+    ...data,
+
+    x: data.spawnX,
+    y: data.spawnY,
+
+    r: data.r || 15,
+
+    hp: data.maxHp,
+
+    alive: true,
+
+    attackCd: 0,
+    specialCd: 0,
+    secondaryCd: 0,
+
+    shield: 0,
+
+    respawnTimer: 0,
+
+    aiTimer: Math.random() * 0.5
+  };
+}
+
+// ============================================================
+// PLAYER
+// ============================================================
+
+const player = makeCharacter({
+  id: "redLizard",
+
+  name: "RED LIZARD",
+
+  team: "good",
+
+  type: "lizard",
+
+  imageKey: "redLizard",
+
+  color: "#ef3c35",
+
+  spawnX: 500,
+  spawnY: 555,
+
+  maxHp: 520,
+
+  speed: 185
+});
+
+// ============================================================
+// GOOD ALLIES
+// ============================================================
+
+const allies = [
+  makeCharacter({
+    id: "gunOperative",
+
+    name: "AUBURN OPERATIVE",
+
+    team: "good",
+
+    type: "gun",
+
+    imageKey: "gunOperative",
+
+    color: "#3cb9d4",
+
+    spawnX: 320,
+    spawnY: 525,
+
+    maxHp: 420,
+
+    speed: 170
+  }),
+
+  makeCharacter({
+    id: "psychicGirl",
+
+    name: "PSYCHIC GIRL",
+
+    team: "good",
+
+    type: "psychic",
+
+    imageKey: "psychicGirl",
+
+    color: "#6ad8ff",
+
+    spawnX: 675,
+    spawnY: 520,
+
+    maxHp: 400,
+
+    speed: 165
+  }),
+
+  makeCharacter({
+    id: "fireGuardian",
+
+    name: "FIRE GUARDIAN",
+
+    team: "good",
+
+    type: "fire",
+
+    imageKey: "fireGuardian",
+
+    color: "#65c980",
+
+    spawnX: 170,
+    spawnY: 505,
+
+    maxHp: 650,
+
+    speed: 145
+  })
+];
+
+// ============================================================
+// ENEMIES
+// ============================================================
+
+const enemies = [
+  makeCharacter({
+    id: "nightmareSlasher",
+
+    name: "NIGHTMARE SLASHER",
+
+    team: "enemy",
+
+    type: "knife",
+
+    imageKey: "nightmareSlasher",
+
+    color: "#db3b46",
+
+    spawnX: 160,
+    spawnY: 95,
+
+    maxHp: 470,
+
+    speed: 155
+  }),
+
+  makeCharacter({
+    id: "tarMonster",
+
+    name: "TAR MONSTER",
+
+    team: "enemy",
+
+    type: "tar",
+
+    imageKey: "tarMonster",
+
+    color: "#17171b",
+
+    spawnX: 500,
+    spawnY: 110,
+
+    maxHp: 760,
+
+    speed: 135
+  }),
+
+  makeCharacter({
+    id: "enemy3",
+
+    name: "ENEMY 3",
+
+    team: "enemy",
+
+    type: "gun",
+
+    imageKey: "enemy3",
+
+    color: "#c63542",
+
+    spawnX: 840,
+    spawnY: 100,
+
+    maxHp: 450,
+
+    speed: 160
+  })
+];
+
+const allCharacters = [
+  player,
+  ...allies,
+  ...enemies
+];
+
+// ============================================================
+// TARGETING
+// ============================================================
+
+function opponentsOf(character) {
+  return allCharacters.filter(other =>
+    other.alive &&
+    other !== character &&
+    other.team !== character.team
+  );
+}
+
+function nearestOpponent(character, maxRange = Infinity) {
+  let closest = null;
+  let closestDistance = maxRange;
+
+  for (const other of opponentsOf(character)) {
+    const d = dist(
+      character,
+      other
+    );
+
+    if (d < closestDistance) {
+      closestDistance = d;
+      closest = other;
+    }
+  }
+
+  return closest;
+}
+
+// ============================================================
+// DAMAGE
+// ============================================================
+
+function damageCharacter(target, amount, source) {
+  if (!target.alive) return;
+
+  // Never damage teammates.
+  if (
+    source &&
+    source.team === target.team
+  ) {
+    return;
+  }
+
+  if (target.shield > 0) {
+    const absorbed =
+      Math.min(
+        target.shield,
+        amount
+      );
+
+    target.shield -= absorbed;
+    amount -= absorbed;
+  }
+
+  if (amount <= 0) return;
+
+  target.hp -= amount;
+
+  playSfx("hurt", 0.4);
+
+  effects.push({
+    type: "hit",
+    x: target.x,
+    y: target.y,
+    timer: 0.15
+  });
+
+  if (target.hp <= 0) {
+    target.hp = 0;
+    target.alive = false;
+
+    target.respawnTimer = 3;
+
+    playSfx("death", 0.5);
+
+    effects.push({
+      type: "death",
+      x: target.x,
+      y: target.y,
+      timer: 0.6
+    });
+  }
+}
+
+// ============================================================
+// PROJECTILES
+// ============================================================
+
+const projectiles = [];
+const effects = [];
+const firewalls = [];
+
+function fireProjectile(
+  owner,
+  type,
+  direction,
+  speed,
+  damage,
+  radius
+) {
+  projectiles.push({
+    owner,
+
+    type,
+
+    x:
+      owner.x +
+      direction.x * 20,
+
+    y:
+      owner.y +
+      direction.y * 20,
+
+    vx:
+      direction.x * speed,
+
+    vy:
+      direction.y * speed,
+
+    damage,
+
+    r: radius,
+
+    life: 1.8
+  });
+}
+
+// ============================================================
+// PLAYER ATTACK — RED LIZARD
+// ============================================================
+
+function playerTongueAttack() {
+  if (!player.alive) return;
+  if (player.attackCd > 0) return;
+
+  const dir = normalize(
+    mouse.x - player.x,
+    mouse.y - player.y
+  );
+
+  const range = 240;
+
+  const endX =
+    player.x +
+    dir.x * range;
+
+  const endY =
+    player.y +
+    dir.y * range;
+
+  let target = null;
+  let closestForward = Infinity;
+
+  for (const enemy of enemies) {
+    if (!enemy.alive) continue;
+
+    const lineDistance =
+      pointSegmentDistance(
+        enemy.x,
+        enemy.y,
+
+        player.x,
+        player.y,
+
+        endX,
+        endY
+      );
+
+    const forward =
+      (
+        enemy.x -
+        player.x
+      ) * dir.x +
+
+      (
+        enemy.y -
+        player.y
+      ) * dir.y;
+
+    if (
+      forward > 0 &&
+      forward < range &&
+      lineDistance <
+      enemy.r + 16 &&
+      forward < closestForward
+    ) {
+      closestForward = forward;
+      target = enemy;
+    }
+  }
+
+  effects.push({
+    type: "tongue",
+
+    x1: player.x,
+    y1: player.y,
+
+    x2:
+      target
+        ? target.x
+        : endX,
+
+    y2:
+      target
+        ? target.y
+        : endY,
+
+    timer: 0.18
+  });
+
+  playSfx("tongueGrab");
+
+  if (target) {
+    damageCharacter(
+      target,
+      80,
+      player
+    );
+
+    const pull =
+      normalize(
+        player.x -
+        target.x,
+
+        player.y -
+        target.y
+      );
+
+    for (let i = 0; i < 8; i++) {
+      moveEntity(
+        target,
+        pull.x * 5,
+        pull.y * 5
+      );
+    }
+  }
+
+  player.attackCd = 0.55;
+}
+
+// ============================================================
+// PLAYER SPECIAL
+// ============================================================
+
+function useSpecial(character) {
+  if (character !== player) return;
+
+  if (
+    !character.alive ||
+    character.specialCd > 0
+  ) {
+    return;
+  }
+
+  let target = null;
+  let closest = 145;
+
+  for (const enemy of enemies) {
+    if (!enemy.alive) continue;
+
+    const d = dist(
+      player,
+      enemy
+    );
+
+    if (d < closest) {
+      closest = d;
+      target = enemy;
+    }
+  }
+
+  if (target) {
+    playSfx("tongueEat");
+
+    effects.push({
+      type: "tongue",
+
+      x1: player.x,
+      y1: player.y,
+
+      x2: target.x,
+      y2: target.y,
+
+      timer: 0.3
+    });
+
+    if (
+      target.hp <=
+      target.maxHp * 0.3
+    ) {
+      damageCharacter(
+        target,
+        9999,
+        player
+      );
+
+      player.hp = Math.min(
+        player.maxHp,
+        player.hp + 120
+      );
+    } else {
+      damageCharacter(
+        target,
+        150,
+        player
+      );
+    }
+  }
+
+  character.specialCd = 5;
+}
+
+function useSecondary(character) {
+  // reserved for later
+}
+
+// ============================================================
+// GUN ATTACK
+// ============================================================
+
+function gunAttack(character, target) {
+  if (character.attackCd > 0) return;
+
+  const dir = normalize(
+    target.x - character.x,
+    target.y - character.y
+  );
+
+  fireProjectile(
+    character,
+    "bullet",
+    dir,
+    480,
+    45,
+    4
+  );
+
+  playSfx("gunShot", 0.35);
+
+  character.attackCd =
+    0.65 + Math.random() * 0.25;
+}
+
+// ============================================================
+// PSYCHIC ATTACK
+// ============================================================
+
+function psychicAttack(character, target) {
+  if (character.attackCd > 0) return;
+
+  if (
+    dist(character, target) > 310
+  ) {
+    return;
+  }
+
+  damageCharacter(
+    target,
+    50,
+    character
+  );
+
+  const push = normalize(
+    target.x - character.x,
+    target.y - character.y
+  );
+
+  for (let i = 0; i < 7; i++) {
+    moveEntity(
+      target,
+      push.x * 5,
+      push.y * 5
+    );
+  }
+
+  effects.push({
+    type: "psychic",
+
+    x1: character.x,
+    y1: character.y,
+
+    x2: target.x,
+    y2: target.y,
+
+    timer: 0.25
+  });
+
+  playSfx("telekinesis");
+
+  character.attackCd = 1.2;
+}
+
+// ============================================================
+// FIREBALL
+// ============================================================
+
+function fireAttack(character, target) {
+  if (character.attackCd > 0) return;
+
+  const dir = normalize(
+    target.x - character.x,
+    target.y - character.y
+  );
+
+  fireProjectile(
+    character,
+    "fireball",
+    dir,
+    360,
+    70,
+    8
+  );
+
+  playSfx("fireball");
+
+  character.attackCd = 1.1;
+}
+
+// ============================================================
+// KNIFE ATTACK
+// ============================================================
+
+function knifeAttack(character, target) {
+  if (character.attackCd > 0) return;
+
+  const d =
+    dist(character, target);
+
+  if (d < 65) {
+    damageCharacter(
+      target,
+      95,
+      character
+    );
+
+    playSfx("knifeHit");
+
+    character.attackCd = 1;
+    return;
+  }
+
+  const dir = normalize(
+    target.x - character.x,
+    target.y - character.y
+  );
+
+  fireProjectile(
+    character,
+    "knife",
+    dir,
+    420,
+    65,
+    5
+  );
+
+  playSfx("knifeThrow");
+
+  character.attackCd = 1.1;
+}
+
+// ============================================================
+// TAR MONSTER
+// ============================================================
+
+function tarAttack(character, target) {
+  if (character.attackCd > 0) return;
+
+  if (
+    dist(character, target) > 250
+  ) {
+    return;
+  }
+
+  effects.push({
+    type: "tar",
+
+    x1: character.x,
+    y1: character.y,
+
+    x2: target.x,
+    y2: target.y,
+
+    timer: 0.25
+  });
+
+  damageCharacter(
+    target,
+    80,
+    character
+  );
+
+  const pull = normalize(
+    character.x - target.x,
+    character.y - target.y
+  );
+
+  for (let i = 0; i < 8; i++) {
+    moveEntity(
+      target,
+      pull.x * 5,
+      pull.y * 5
+    );
+  }
+
+  playSfx("tarStretch");
+
+  character.attackCd = 1.3;
+}
+
+// ============================================================
+// AI UPDATE
+// ============================================================
+
+function updateAI(character, dt) {
+  if (!character.alive) return;
+
+  const target =
+    nearestOpponent(
+      character,
+      1000
+    );
+
+  if (!target) return;
+
+  const distance =
+    dist(character, target);
+
+  let preferredDistance = 190;
+
+  if (character.type === "knife") {
+    preferredDistance = 90;
+  }
+
+  if (character.type === "tar") {
+    preferredDistance = 125;
+  }
+
+  if (character.type === "psychic") {
+    preferredDistance = 240;
+  }
+
+  if (character.type === "fire") {
+    preferredDistance = 260;
+  }
+
+  // MOVE TOWARD TARGET
+
+  if (
+    distance >
+    preferredDistance
+  ) {
+    moveTowardSmart(
+      character,
+      target,
+      character.speed,
+      dt
+    );
+  }
+
+  // ATTACK
+
+  if (character.type === "gun") {
+    if (distance < 400) {
+      gunAttack(
+        character,
+        target
+      );
+    }
+  }
+
+  else if (
+    character.type === "psychic"
+  ) {
+    psychicAttack(
+      character,
+      target
+    );
+  }
+
+  else if (
+    character.type === "fire"
+  ) {
+    if (distance < 400) {
+      fireAttack(
+        character,
+        target
+      );
+    }
+  }
+
+  else if (
+    character.type === "knife"
+  ) {
+    if (distance < 360) {
+      knifeAttack(
+        character,
+        target
+      );
+    }
+  }
+
+  else if (
+    character.type === "tar"
+  ) {
+    tarAttack(
+      character,
+      target
+    );
+  }
+}
+
+// ============================================================
+// PLAYER UPDATE
+// ============================================================
+
+function updatePlayer(dt) {
+  if (!player.alive) return;
+
+  let dx =
+    (keys.KeyD ? 1 : 0) -
+    (keys.KeyA ? 1 : 0);
+
+  let dy =
+    (keys.KeyS ? 1 : 0) -
+    (keys.KeyW ? 1 : 0);
+
+  if (dx || dy) {
+    const dir =
+      normalize(dx, dy);
+
+    moveEntity(
+      player,
+
+      dir.x *
+      player.speed *
+      dt,
+
+      dir.y *
+      player.speed *
+      dt
+    );
+  }
+
+  if (mouse.down) {
+    playerTongueAttack();
+  }
+}
+
+// ============================================================
+// COOLDOWNS / RESPAWN
+// ============================================================
+
+function updateCharacters(dt) {
+  for (const character of allCharacters) {
+    character.attackCd =
+      Math.max(
+        0,
+        character.attackCd - dt
+      );
+
+    character.specialCd =
+      Math.max(
+        0,
+        character.specialCd - dt
+      );
+
+    character.secondaryCd =
+      Math.max(
+        0,
+        character.secondaryCd - dt
+      );
+
+    if (!character.alive) {
+      character.respawnTimer -= dt;
+
+      if (
+        character.respawnTimer <= 0
+      ) {
+        respawn(character);
+      }
+    }
+  }
+}
+
+function respawn(character) {
+  character.x =
+    character.spawnX;
+
+  character.y =
+    character.spawnY;
+
+  character.hp =
+    character.maxHp;
+
+  character.shield = 0;
+
+  character.alive = true;
+}
+
+// ============================================================
+// PROJECTILE UPDATE
+// ============================================================
+
+function updateProjectiles(dt) {
+  for (
+    let i =
+      projectiles.length - 1;
+
+    i >= 0;
+
+    i--
+  ) {
+    const projectile =
+      projectiles[i];
+
+    projectile.x +=
+      projectile.vx * dt;
+
+    projectile.y +=
+      projectile.vy * dt;
+
+    projectile.life -= dt;
+
+    if (
+      projectile.life <= 0 ||
+      collidesMap(projectile)
+    ) {
+      projectiles.splice(i, 1);
+      continue;
+    }
+
+    let hit = false;
+
+    for (const target of allCharacters) {
+      if (
+        !target.alive ||
+        target ===
+        projectile.owner ||
+        target.team ===
+        projectile.owner.team
+      ) {
+        continue;
+      }
+
+      if (
+        Math.hypot(
+          projectile.x -
+          target.x,
+
+          projectile.y -
+          target.y
+        )
+        <
+        projectile.r +
+        target.r
+      ) {
+        damageCharacter(
+          target,
+          projectile.damage,
+          projectile.owner
+        );
+
+        if (
+          projectile.type ===
+          "knife"
+        ) {
+          playSfx("knifeHit");
+        }
+
+        if (
+          projectile.type ===
+          "fireball"
+        ) {
+          effects.push({
+            type: "explosion",
+
+            x:
+              projectile.x,
+
+            y:
+              projectile.y,
+
+            timer: 0.3
+          });
+        }
+
+        projectiles.splice(i, 1);
+
+        hit = true;
+        break;
+      }
+    }
+
+    if (hit) continue;
+  }
+}
+
+// ============================================================
+// EFFECT UPDATE
+// ============================================================
+
+function updateEffects(dt) {
+  for (
+    let i =
+      effects.length - 1;
+
+    i >= 0;
+
+    i--
+  ) {
+    effects[i].timer -= dt;
+
+    if (
+      effects[i].timer <= 0
+    ) {
+      effects.splice(i, 1);
+    }
+  }
+}
+
+// ============================================================
+// DRAW MAP
+// ============================================================
+
+function drawMap() {
+  ctx.fillStyle = "#07111d";
+
+  ctx.fillRect(
+    0,
+    0,
+    W,
+    H
+  );
+
+  // ship
+  ctx.fillStyle = "#111b28";
+
+  ctx.fillRect(
+    36,
+    36,
+    W - 72,
+    H - 72
+  );
+
+  // cockpit
+  ctx.fillStyle = "#172433";
+
+  ctx.fillRect(
+    350,
+    40,
+    300,
+    110
+  );
+
+  // medbay
+  ctx.fillStyle = "#152a30";
+
+  ctx.fillRect(
+    40,
+    150,
+    210,
+    300
+  );
+
+  // armory
+  ctx.fillStyle = "#2b241b";
+
+  ctx.fillRect(
+    750,
+    150,
+    210,
+    300
+  );
+
+  // reactor
+  ctx.fillStyle = "#211b35";
+
+  ctx.fillRect(
+    408,
+    200,
+    184,
+    270
+  );
+
+  // hangar
+  ctx.fillStyle = "#1c232b";
+
+  ctx.fillRect(
+    268,
+    470,
+    464,
+    100
+  );
+
+  // reactor
+  ctx.fillStyle = "#7157ff";
+
+  ctx.fillRect(
+    470,
+    285,
+    60,
+    40
+  );
+
+  // walls
+  for (const wall of walls) {
+    ctx.fillStyle = "#3e536b";
+
+    ctx.fillRect(
+      wall.x,
+      wall.y,
+      wall.w,
+      wall.h
+    );
+
+    ctx.fillStyle = "#61768c";
+
+    if (wall.w > wall.h) {
+      ctx.fillRect(
+        wall.x,
+        wall.y,
+        wall.w,
+        4
+      );
+    } else {
+      ctx.fillRect(
+        wall.x,
+        wall.y,
+        4,
+        wall.h
+      );
+    }
+  }
+
+  // labels
+  ctx.textAlign = "center";
+
+  ctx.fillStyle = "#70879b";
+
+  ctx.font =
+    "bold 12px monospace";
+
+  ctx.fillText(
+    "COCKPIT",
+    500,
+    65
+  );
+
+  ctx.fillText(
+    "MEDBAY",
+    145,
+    175
+  );
+
+  ctx.fillText(
+    "ARMORY",
+    855,
+    175
+  );
+
+  ctx.fillText(
+    "REACTOR",
+    500,
+    225
+  );
+
+  ctx.fillText(
+    "HANGAR",
+    500,
+    560
+  );
+}
+
+// ============================================================
+// CHARACTER DRAWING
+// ============================================================
+
+function drawCharacter(character) {
+  if (!character.alive) return;
+
+  const img =
+    images[
+      character.imageKey
+    ];
+
+  // shadow
+  ctx.fillStyle =
+    "rgba(0,0,0,.35)";
+
+  ctx.beginPath();
+
+  ctx.ellipse(
+    character.x,
+    character.y + 10,
+
+    16,
+    7,
+
+    0,
+    0,
+    Math.PI * 2
+  );
+
+  ctx.fill();
+
+  if (
+    img &&
+    img.complete &&
+    img.naturalWidth
+  ) {
+    const size =
+      character.type === "tar"
+        ? 58
+        : 48;
+
+    ctx.drawImage(
+      img,
+
+      character.x -
+      size / 2,
+
+      character.y -
+      size / 2,
+
+      size,
+      size
+    );
+  }
+
+  else {
+    // Strong color distinction when no image supplied.
+    ctx.fillStyle =
+      character.color;
+
+    ctx.beginPath();
+
+    ctx.arc(
+      character.x,
+      character.y,
+      character.type === "tar"
+        ? 20
+        : 16,
+      0,
+      Math.PI * 2
+    );
+
+    ctx.fill();
+
+    // Enemy marker
+    if (
+      character.team === "enemy"
+    ) {
+      ctx.strokeStyle =
+        "#ff404d";
+
+      ctx.lineWidth = 3;
+
+      ctx.beginPath();
+
+      ctx.arc(
+        character.x,
+        character.y,
+        21,
+        0,
+        Math.PI * 2
+      );
+
+      ctx.stroke();
+    }
+
+    // Ally marker
+    else if (
+      character !== player
+    ) {
+      ctx.strokeStyle =
+        "#45dff7";
+
+      ctx.lineWidth = 2;
+
+      ctx.beginPath();
+
+      ctx.arc(
+        character.x,
+        character.y,
+        21,
+        0,
+        Math.PI * 2
+      );
+
+      ctx.stroke();
+    }
+
+    // Lizard lips
+    if (
+      character.type === "lizard"
+    ) {
+      ctx.fillStyle =
+        "#9e42b5";
+
+      ctx.fillRect(
+        character.x - 8,
+        character.y - 4,
+        16,
+        7
+      );
+    }
+  }
+
+  // Player ring
+  if (character === player) {
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+
+    ctx.beginPath();
+
+    ctx.arc(
+      character.x,
+      character.y,
+      25,
+      0,
+      Math.PI * 2
+    );
+
+    ctx.stroke();
+  }
+
+  // health background
+  ctx.fillStyle = "#0b1017";
+
+  ctx.fillRect(
+    character.x - 21,
+    character.y - 32,
+    42,
+    6
+  );
+
+  const hpPercent =
+    character.hp /
+    character.maxHp;
+
+  ctx.fillStyle =
+    character.team === "enemy"
+      ? "#ff4f5d"
+      : "#57e68b";
+
+  ctx.fillRect(
+    character.x - 20,
+    character.y - 31,
+    40 * hpPercent,
+    4
+  );
+
+  // Enemy label
+  if (
+    character.team === "enemy"
+  ) {
+    ctx.fillStyle = "#ff8d95";
+    ctx.font = "9px monospace";
+    ctx.textAlign = "center";
+
+    ctx.fillText(
+      "ENEMY",
+      character.x,
+      character.y - 38
+    );
+  }
+}
+
+// ============================================================
+// DRAW PROJECTILES
+// ============================================================
+
+function drawProjectiles() {
+  for (
+    const p of projectiles
+  ) {
+    if (
+      p.type === "fireball"
+    ) {
+      ctx.fillStyle = "#ff741c";
+
+      ctx.beginPath();
+
+      ctx.arc(
+        p.x,
+        p.y,
+        9,
+        0,
+        Math.PI * 2
+      );
+
+      ctx.fill();
+
+      ctx.fillStyle = "#ffd653";
+
+      ctx.beginPath();
+
+      ctx.arc(
+        p.x,
+        p.y,
+        4,
+        0,
+        Math.PI * 2
+      );
+
+      ctx.fill();
+    }
+
+    else if (
+      p.type === "knife"
+    ) {
+      ctx.strokeStyle = "#eeeeee";
+      ctx.lineWidth = 3;
+
+      ctx.beginPath();
+
+      ctx.moveTo(
+        p.x - 7,
+        p.y
+      );
+
+      ctx.lineTo(
+        p.x + 7,
+        p.y
+      );
+
+      ctx.stroke();
+    }
+
+    else {
+      ctx.fillStyle =
+        p.owner.team === "enemy"
+          ? "#ff5b62"
+          : "#ffe36e";
+
+      ctx.fillRect(
+        p.x - 3,
+        p.y - 3,
+        7,
+        7
+      );
+    }
+  }
+}
+
+// ============================================================
+// DRAW EFFECTS
+// ============================================================
+
+function drawEffects() {
+  for (const effect of effects) {
+    if (
+      effect.type === "tongue"
+    ) {
+      ctx.strokeStyle = "#db72a9";
+      ctx.lineWidth = 9;
+
+      ctx.beginPath();
+
+      ctx.moveTo(
+        effect.x1,
+        effect.y1
+      );
+
+      ctx.lineTo(
+        effect.x2,
+        effect.y2
+      );
+
+      ctx.stroke();
+    }
+
+    else if (
+      effect.type === "psychic"
+    ) {
+      ctx.strokeStyle = "#ba83ff";
+      ctx.lineWidth = 5;
+
+      ctx.beginPath();
+
+      ctx.moveTo(
+        effect.x1,
+        effect.y1
+      );
+
+      ctx.lineTo(
+        effect.x2,
+        effect.y2
+      );
+
+      ctx.stroke();
+    }
+
+    else if (
+      effect.type === "tar"
+    ) {
+      ctx.strokeStyle = "#020202";
+      ctx.lineWidth = 15;
+
+      ctx.beginPath();
+
+      ctx.moveTo(
+        effect.x1,
+        effect.y1
+      );
+
+      ctx.lineTo(
+        effect.x2,
+        effect.y2
+      );
+
+      ctx.stroke();
+    }
+
+    else if (
+      effect.type ===
+      "explosion"
+    ) {
+      ctx.fillStyle =
+        "rgba(255,105,15,.55)";
+
+      ctx.beginPath();
+
+      ctx.arc(
+        effect.x,
+        effect.y,
+        34,
+        0,
+        Math.PI * 2
+      );
+
+      ctx.fill();
+    }
+
+    else if (
+      effect.type === "hit"
+    ) {
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 3;
+
+      ctx.beginPath();
+
+      ctx.arc(
+        effect.x,
+        effect.y,
+        19,
+        0,
+        Math.PI * 2
+      );
+
+      ctx.stroke();
+    }
+  }
+}
+
+// ============================================================
+// HUD
+// ============================================================
+
+function drawHUD() {
+  ctx.fillStyle =
+    "rgba(5,10,18,.92)";
+
+  ctx.fillRect(
+    14,
+    14,
+    380,
+    92
+  );
+
+  ctx.strokeStyle = "#395369";
+
+  ctx.strokeRect(
+    14,
+    14,
+    380,
+    92
+  );
+
+  ctx.textAlign = "left";
+
+  ctx.fillStyle = "#6df6ff";
+  ctx.font = "bold 16px monospace";
+
+  ctx.fillText(
+    "RED LIZARD",
+    27,
+    37
+  );
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "11px monospace";
+
+  ctx.fillText(
+    `HP ${Math.ceil(player.hp)} / ${player.maxHp}`,
+    27,
+    57
+  );
+
+  ctx.fillStyle = "#8ba4b8";
+
+  ctx.fillText(
+    "LMB: TONGUE ATTACK",
+    27,
+    76
+  );
+
+  ctx.fillText(
+    "Q: DEVOUR WEAK ENEMY",
+    190,
+    76
+  );
+
+  ctx.fillText(
+    "WASD: MOVE   R: RESET",
+    27,
+    94
+  );
+
+  // Legend
+  ctx.textAlign = "right";
+
+  ctx.fillStyle = "#50e3ff";
+  ctx.fillText(
+    "CYAN = ALLY",
+    W - 20,
+    30
+  );
+
+  ctx.fillStyle = "#ff5965";
+  ctx.fillText(
+    "RED = ENEMY",
+    W - 20,
+    46
+  );
+}
+
+// ============================================================
+// CROSSHAIR
+// ============================================================
+
+function drawCrosshair() {
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 1;
+
+  ctx.beginPath();
+
+  ctx.moveTo(
+    mouse.x - 9,
+    mouse.y
+  );
+
+  ctx.lineTo(
+    mouse.x - 3,
+    mouse.y
+  );
+
+  ctx.moveTo(
+    mouse.x + 3,
+    mouse.y
+  );
+
+  ctx.lineTo(
+    mouse.x + 9,
+    mouse.y
+  );
+
+  ctx.moveTo(
+    mouse.x,
+    mouse.y - 9
+  );
+
+  ctx.lineTo(
+    mouse.x,
+    mouse.y - 3
+  );
+
+  ctx.moveTo(
+    mouse.x,
+    mouse.y + 3
+  );
+
+  ctx.lineTo(
+    mouse.x,
+    mouse.y + 9
+  );
+
+  ctx.stroke();
+}
+
+// ============================================================
+// RESET
+// ============================================================
+
+function resetGame() {
+  projectiles.length = 0;
+  effects.length = 0;
+
+  for (
+    const character
+    of allCharacters
+  ) {
+    character.x =
+      character.spawnX;
+
+    character.y =
+      character.spawnY;
+
+    character.hp =
+      character.maxHp;
+
+    character.alive = true;
+
+    character.attackCd = 0;
+    character.specialCd = 0;
+
+    character.shield = 0;
+
+    character.respawnTimer = 0;
+  }
+}
+
+// ============================================================
+// MAIN UPDATE
+// ============================================================
+
+function update(dt) {
+  updateCharacters(dt);
+
+  updatePlayer(dt);
+
+  // Your allies move + fight automatically
+  for (const ally of allies) {
+    updateAI(
+      ally,
+      dt
+    );
+  }
+
+  // Enemies move + fight automatically
+  for (const enemy of enemies) {
+    updateAI(
+      enemy,
+      dt
+    );
+  }
+
+  updateProjectiles(dt);
+  updateEffects(dt);
+}
+
+// ============================================================
+// DRAW
+// ============================================================
+
+function draw() {
+  drawMap();
+
+  for (
+    const character
+    of allCharacters
+  ) {
+    drawCharacter(
+      character
+    );
+  }
+
+  drawProjectiles();
+  drawEffects();
+
+  drawHUD();
+  drawCrosshair();
+}
+
+// ============================================================
+// LOOP
+// ============================================================
+
+let last =
+  performance.now();
+
+function loop(now) {
+  const dt = Math.min(
+    (now - last) / 1000,
+    0.033
+  );
+
+  last = now;
+
+  update(dt);
+  draw();
+
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+
+// ============================================================
+// MUSIC BUTTON
+// ============================================================
+
+const musicButton =
+  document.getElementById(
+    "startGame"
+  );
+
+if (musicButton) {
+  musicButton.addEventListener(
+    "click",
+    () => {
+      startMusic();
+
+      musicButton.textContent =
+        "MUSIC ON";
+    }
+  );
+}
